@@ -8,13 +8,6 @@ export const LIST_RECIPES_QUERY = `
     c,
     collect(DISTINCT a.name) AS recipeAllergens
 
-  WHERE
-    size($excludedAllergens) = 0
-    OR NONE(
-      allergen IN recipeAllergens
-      WHERE allergen IN $excludedAllergens
-    )
-
   RETURN
     r.id AS id,
     r.name AS name,
@@ -22,9 +15,17 @@ export const LIST_RECIPES_QUERY = `
     r.difficulty AS difficulty,
     r.prepMinutes AS prepMinutes,
     coalesce(c.name, "Other") AS cuisine,
-    recipeAllergens AS allergens
+    recipeAllergens AS allergens,
+    any(
+      allergen IN recipeAllergens
+      WHERE allergen IN $excludedAllergens
+    ) AS hasConflict,
+    [
+      allergen IN recipeAllergens
+      WHERE allergen IN $excludedAllergens
+    ] AS matchedAllergens
 
-  ORDER BY r.name
+  ORDER BY hasConflict DESC, r.name
   LIMIT $limit
 `;
 
@@ -82,4 +83,5 @@ export const SAFE_SUBSTITUTIONS_QUERY = `
     length(path) AS hops
 
   ORDER BY hops, replacement
+  LIMIT 20
 `;

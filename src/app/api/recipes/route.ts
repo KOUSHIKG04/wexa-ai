@@ -1,6 +1,6 @@
 import { driver } from "@/lib/db";
 import { LIST_RECIPES_QUERY } from "@/lib/queries";
-import type { RecipeSummary } from "@/lib/types";
+import { ALLERGENS, type RecipeSummary } from "@/lib/types";
 import { isInt } from "neo4j-driver";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +17,10 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
 
-    const excludedAllergens = searchParams.getAll("allergen").filter(Boolean);
+    const supportedAllergens = new Set<string>(ALLERGENS);
+    const excludedAllergens = searchParams
+      .getAll("allergen")
+      .filter((allergen) => supportedAllergens.has(allergen));
 
     const result = await driver.executeQuery(LIST_RECIPES_QUERY, {
       excludedAllergens,
@@ -32,6 +35,8 @@ export async function GET(request: Request) {
       prepMinutes: convertNumber(record.get("prepMinutes")),
       cuisine: record.get("cuisine"),
       allergens: record.get("allergens") ?? [],
+      hasConflict: Boolean(record.get("hasConflict")),
+      matchedAllergens: record.get("matchedAllergens") ?? [],
     }));
 
     return Response.json({ recipes });

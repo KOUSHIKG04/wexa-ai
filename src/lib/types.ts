@@ -17,6 +17,8 @@ export interface RecipeSummary {
   prepMinutes: number;
   cuisine: string;
   allergens: string[];
+  hasConflict: boolean;
+  matchedAllergens: string[];
 }
 
 export interface RecipeIngredient {

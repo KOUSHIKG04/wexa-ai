@@ -1,10 +1,11 @@
 import { driver } from "@/lib/db";
 import { RECIPE_DETAILS_QUERY, SAFE_SUBSTITUTIONS_QUERY } from "@/lib/queries";
-import type {
-  RecipeDetailsData,
-  RecipeDetailsResponse,
-  RecipeIngredient,
-  Substitute,
+import {
+  ALLERGENS,
+  type RecipeDetailsData,
+  type RecipeDetailsResponse,
+  type RecipeIngredient,
+  type Substitute,
 } from "@/lib/types";
 import { isInt } from "neo4j-driver";
 
@@ -26,7 +27,10 @@ export async function GET(
     const { id } = await context.params;
     const { searchParams } = new URL(request.url);
 
-    const excludedAllergens = searchParams.getAll("allergen").filter(Boolean);
+    const supportedAllergens = new Set<string>(ALLERGENS);
+    const excludedAllergens = searchParams
+      .getAll("allergen")
+      .filter((allergen) => supportedAllergens.has(allergen));
 
     const recipeResult = await driver.executeQuery(RECIPE_DETAILS_QUERY, {
       recipeId: id,
