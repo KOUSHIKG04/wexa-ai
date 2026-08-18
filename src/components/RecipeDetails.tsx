@@ -16,42 +16,58 @@ export default function RecipeDetails({
   const [data, setData] = useState<RecipeDetailsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  async function loadRecipe() {
-    setLoading(true);
-    setError("");
-
-    try {
-      const query = new URLSearchParams();
-
-      excludedAllergens.forEach((allergen) => {
-        query.append("allergen", allergen);
-      });
-
-      const response = await fetch(
-        `/api/recipes/${encodeURIComponent(recipeId)}?${query}`,
-        { cache: "no-store" },
-      );
-
-      const responseData = await response.json();
-
-      if (!response.ok) {
-        throw new Error(responseData.message ?? "Unable to load recipe.");
-      }
-
-      setData(responseData);
-    } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "Unable to load recipe.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    void loadRecipe();
-  }, [recipeId, excludedAllergens.join("|")]);
+    let ignore = false;
+
+    async function fetchRecipe() {
+      try {
+        const query = new URLSearchParams();
+
+        excludedAllergens.forEach((allergen) => {
+          query.append("allergen", allergen);
+        });
+
+        const response = await fetch(
+          `/api/recipes/${encodeURIComponent(recipeId)}?${query.toString()}`,
+          { cache: "no-store" },
+        );
+
+        const responseData = await response.json();
+
+        if (ignore) return;
+
+        if (!response.ok) {
+          throw new Error(responseData.message ?? "Unable to load recipe.");
+        }
+
+        setData(responseData);
+        setError("");
+      } catch (err) {
+        if (ignore) return;
+        setError(
+          err instanceof Error ? err.message : "Unable to load recipe.",
+        );
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void fetchRecipe();
+
+    return () => {
+      ignore = true;
+    };
+  }, [recipeId, excludedAllergens, reloadKey]);
+
+  function handleRetry() {
+    setLoading(true);
+    setError("");
+    setReloadKey((k) => k + 1);
+  }
 
   if (loading) {
     return (
@@ -75,7 +91,7 @@ export default function RecipeDetails({
           <p className="mt-3 text-red-800">{error}</p>
           <button
             type="button"
-            onClick={loadRecipe}
+            onClick={handleRetry}
             className="mt-5 rounded-xl bg-red-700 px-5 py-3 font-semibold text-white"
           >
             Try again

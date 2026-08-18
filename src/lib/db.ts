@@ -18,7 +18,9 @@ const globalForNeo4j = globalThis as unknown as {
 
 export const driver =
   globalForNeo4j.cognoDriver ??
-  neo4j.driver(uri, neo4j.auth.basic(username, password));
+  neo4j.driver(uri, neo4j.auth.basic(username, password), {
+    maxConnectionPoolSize: 5, maxTransactionRetryTime: 5_000,
+  });
 
 if (process.env.NODE_ENV !== "production") {
   globalForNeo4j.cognoDriver = driver;

@@ -1,4 +1,5 @@
-import dotenv from "dotenv"; import neo4j from "neo4j-driver";
+import dotenv from "dotenv";
+import neo4j from "neo4j-driver";
 
 dotenv.config({ path: ".env.local" });
 
@@ -7,10 +8,48 @@ const username = process.env.COGNODB_USERNAME;
 const password = process.env.COGNODB_PASSWORD;
 
 if (!uri || !username || !password) {
-  throw new Error("CognoDB environment variables are missing");
+  throw new Error(
+    "Missing COGNODB_URI, COGNODB_USERNAME, or COGNODB_PASSWORD in .env.local",
+  );
 }
 
-const driver = neo4j.driver(uri, neo4j.auth.basic(username, password));
+const driver = neo4j.driver(
+  uri,
+  neo4j.auth.basic(username, password),
+  {
+    maxConnectionPoolSize: 5,
+    maxTransactionRetryTime: 5_000,
+  },
+);
+
+type IngredientSeed = {
+  id: string;
+  name: string;
+  allergen: string | null;
+};
+
+type RecipeIngredientSeed = readonly [
+  ingredientId: string,
+  quantity: string,
+  unit: string,
+  optional: boolean,
+];
+
+type RecipeSeed = {
+  id: string;
+  name: string;
+  description: string;
+  difficulty: "Easy" | "Medium" | "Hard";
+  prepMinutes: number;
+  cuisine: string;
+  ingredients: readonly RecipeIngredientSeed[];
+};
+
+type SubstitutionSeed = readonly [
+  replacementId: string,
+  originalId: string,
+  notes: string,
+];
 
 const allergens = [
   { id: "peanut", name: "Peanut" },
@@ -21,7 +60,7 @@ const allergens = [
   { id: "shellfish", name: "Shellfish" },
   { id: "sesame", name: "Sesame" },
   { id: "tree-nut", name: "Tree Nut" },
-];
+] as const;
 
 const cuisines = [
   { id: "thai", name: "Thai" },
@@ -29,7 +68,7 @@ const cuisines = [
   { id: "indian", name: "Indian" },
   { id: "mexican", name: "Mexican" },
   { id: "mediterranean", name: "Mediterranean" },
-];
+] as const;
 
 const ingredients = [
   { id: "rice-noodles", name: "Rice Noodles", allergen: null },
@@ -63,7 +102,7 @@ const ingredients = [
   { id: "coconut-milk", name: "Coconut Milk", allergen: null },
   { id: "garlic", name: "Garlic", allergen: null },
   { id: "onion", name: "Onion", allergen: null },
-];
+] satisfies readonly IngredientSeed[];
 
 const recipes = [
   {
@@ -181,7 +220,7 @@ const recipes = [
       ["butter", "1", "tsp", false],
     ],
   },
-] as const;
+] satisfies readonly RecipeSeed[];
 
 const substitutions = [
   ["sunflower-butter", "peanut-butter", "Nut-free spread alternative"],
@@ -198,131 +237,202 @@ const substitutions = [
   ["olive-oil", "butter", "Dairy-free cooking fat"],
   ["tofu", "paneer", "Plant-based paneer replacement"],
   ["corn-tortilla", "wheat-tortilla", "Gluten-free wrap replacement"],
-] as const;
+] satisfies readonly SubstitutionSeed[];
 
-async function seed() {
+function assertUniqueIds(label: string, ids: readonly string[]): void {
+  const duplicates = ids.filter((id, index) => ids.indexOf(id) !== index);
+  if (duplicates.length > 0) {
+    throw new Error(`${label} contains duplicate IDs: ${[...new Set(duplicates)].join(", ")}`);
+  }
+}
+
+function validateSeedData(): void {
+  assertUniqueIds("Allergens", allergens.map(({ id }) => id));
+  assertUniqueIds("Cuisines", cuisines.map(({ id }) => id));
+  assertUniqueIds("Ingredients", ingredients.map(({ id }) => id));
+  assertUniqueIds("Recipes", recipes.map(({ id }) => id));
+
+  const allergenIds = new Set<string>(allergens.map(({ id }) => id));
+  const cuisineIds = new Set<string>(cuisines.map(({ id }) => id));
+  const ingredientIds = new Set(ingredients.map(({ id }) => id));
+
+  for (const ingredient of ingredients) {
+    if (ingredient.allergen && !allergenIds.has(ingredient.allergen)) {
+      throw new Error(
+        `Ingredient ${ingredient.id} references unknown allergen ${ingredient.allergen}`,
+      );
+    }
+  }
+
+  for (const recipe of recipes) {
+    if (!cuisineIds.has(recipe.cuisine)) {
+      throw new Error(`Recipe ${recipe.id} references unknown cuisine ${recipe.cuisine}`);
+    }
+
+    for (const [ingredientId] of recipe.ingredients) {
+      if (!ingredientIds.has(ingredientId)) {
+        throw new Error(
+          `Recipe ${recipe.id} references unknown ingredient ${ingredientId}`,
+        );
+      }
+    }
+  }
+
+  for (const [replacementId, originalId] of substitutions) {
+    if (!ingredientIds.has(replacementId) || !ingredientIds.has(originalId)) {
+      throw new Error(
+        `Invalid substitution: ${replacementId} -> ${originalId}`,
+      );
+    }
+  }
+}
+
+async function seed(): Promise<void> {
+  validateSeedData();
   await driver.verifyConnectivity();
 
-  await driver.executeQuery(`MATCH (n) DETACH DELETE n`);
+  const shouldReset = process.argv.includes("--reset");
+
+  if (shouldReset) {
+    console.warn("Reset requested: deleting all existing graph data.");
+    await driver.executeQuery("MATCH (n) DETACH DELETE n");
+  }
 
   await driver.executeQuery(
     `
     UNWIND $allergens AS allergen
-    CREATE (:Allergen {
-      id: allergen.id,
-      name: allergen.name
-    })
+    MERGE (a:Allergen {id: allergen.id})
+    SET a.name = allergen.name
     `,
-    { allergens },
+    { allergens: allergens.map((item) => ({ ...item })) },
   );
 
   await driver.executeQuery(
     `
     UNWIND $cuisines AS cuisine
-    CREATE (:Cuisine {
-      id: cuisine.id,
-      name: cuisine.name
-    })
+    MERGE (c:Cuisine {id: cuisine.id})
+    SET c.name = cuisine.name
     `,
-    { cuisines },
+    { cuisines: cuisines.map((item) => ({ ...item })) },
   );
 
   await driver.executeQuery(
     `
     UNWIND $ingredients AS ingredient
-
-    CREATE (i:Ingredient {
-      id: ingredient.id,
-      name: ingredient.name
-    })
-
-    WITH i, ingredient
-    WHERE ingredient.allergen IS NOT NULL
-
-    MATCH (a:Allergen {id: ingredient.allergen})
-    CREATE (i)-[:TRIGGERS]->(a)
+    MERGE (i:Ingredient {id: ingredient.id})
+    SET i.name = ingredient.name
     `,
-    { ingredients },
+    { ingredients: ingredients.map(({ id, name }) => ({ id, name })) },
   );
 
-  for (const recipe of recipes) {
-    await driver.executeQuery(
-      `
-      CREATE (r:Recipe {
-        id: $id,
-        name: $name,
-        description: $description,
-        difficulty: $difficulty,
-        prepMinutes: $prepMinutes
-      })
+  const ingredientAllergens = ingredients.flatMap(
+    ({ id: ingredientId, allergen: allergenId }) =>
+      allergenId === null ? [] : [{ ingredientId, allergenId }],
+  );
 
-      WITH r
-      MATCH (c:Cuisine {id: $cuisine})
-      CREATE (r)-[:BELONGS_TO]->(c)
+  await driver.executeQuery(
+    `
+    UNWIND $ingredientAllergens AS item
+    MATCH (i:Ingredient {id: item.ingredientId})
+    MATCH (a:Allergen {id: item.allergenId})
+    MERGE (i)-[:TRIGGERS]->(a)
+    `,
+    { ingredientAllergens },
+  );
 
-      WITH r
-      UNWIND $ingredients AS recipeIngredient
+  const normalizedRecipes = recipes.map((recipe) => ({
+    id: recipe.id,
+    name: recipe.name,
+    description: recipe.description,
+    difficulty: recipe.difficulty,
+    prepMinutes: recipe.prepMinutes,
+    cuisineId: recipe.cuisine,
+  }));
 
-      MATCH (i:Ingredient {id: recipeIngredient.id})
+  await driver.executeQuery(
+    `
+    UNWIND $recipes AS recipe
+    MERGE (r:Recipe {id: recipe.id})
+    SET
+      r.name = recipe.name,
+      r.description = recipe.description,
+      r.difficulty = recipe.difficulty,
+      r.prepMinutes = recipe.prepMinutes
 
-      CREATE (r)-[:CONTAINS {
-        quantity: recipeIngredient.quantity,
-        unit: recipeIngredient.unit,
-        optional: recipeIngredient.optional
-      }]->(i)
-      `,
-      {
-        id: recipe.id,
-        name: recipe.name,
-        description: recipe.description,
-        difficulty: recipe.difficulty,
-        prepMinutes: recipe.prepMinutes,
-        cuisine: recipe.cuisine,
-        ingredients: recipe.ingredients.map(
-          ([id, quantity, unit, optional]) => ({
-            id,
-            quantity,
-            unit,
-            optional,
-          }),
-        ),
-      },
-    );
-  }
+    WITH r, recipe
+    MATCH (c:Cuisine {id: recipe.cuisineId})
+    MERGE (r)-[:BELONGS_TO]->(c)
+    `,
+    { recipes: normalizedRecipes },
+  );
+
+  const recipeIngredients = recipes.flatMap((recipe) =>
+    recipe.ingredients.map(
+      ([ingredientId, quantity, unit, optional]) => ({
+        recipeId: recipe.id,
+        ingredientId,
+        quantity,
+        unit,
+        optional,
+      }),
+    ),
+  );
+
+  await driver.executeQuery(
+    `
+    UNWIND $recipeIngredients AS item
+    MATCH (r:Recipe {id: item.recipeId})
+    MATCH (i:Ingredient {id: item.ingredientId})
+    MERGE (r)-[contains:CONTAINS]->(i)
+    SET
+      contains.quantity = item.quantity,
+      contains.unit = item.unit,
+      contains.optional = item.optional
+    `,
+    { recipeIngredients },
+  );
+
+  const normalizedSubstitutions = substitutions.map(
+    ([replacementId, originalId, notes]) => ({
+      replacementId,
+      originalId,
+      notes,
+    }),
+  );
 
   await driver.executeQuery(
     `
     UNWIND $substitutions AS substitution
-
-    MATCH (replacement:Ingredient {
-      id: substitution.replacementId
-    })
-
-    MATCH (original:Ingredient {
-      id: substitution.originalId
-    })
-
-    CREATE (replacement)-[:CAN_REPLACE {
-      notes: substitution.notes
-    }]->(original)
+    MATCH (replacement:Ingredient {id: substitution.replacementId})
+    MATCH (original:Ingredient {id: substitution.originalId})
+    MERGE (replacement)-[relation:CAN_REPLACE]->(original)
+    SET relation.notes = substitution.notes
     `,
-    {
-      substitutions: substitutions.map(
-        ([replacementId, originalId, notes]) => ({
-          replacementId,
-          originalId,
-          notes,
-        }),
-      ),
-    },
+    { substitutions: normalizedSubstitutions },
   );
 
+  /*
+  const nodeCount =
+    allergens.length + cuisines.length + ingredients.length + recipes.length;
+  const relationshipCount =
+    ingredientAllergens.length +
+    recipes.length +
+    recipeIngredients.length +
+    substitutions.length;
+
   console.log("SafePlate seed data loaded successfully.");
+  console.log(`Nodes represented by this seed: ${nodeCount}`);
+  console.log(`Relationships represented by this seed: ${relationshipCount}`);
+  console.log(
+    shouldReset
+      ? "The database was reset before seeding."
+      : "Existing matching data was updated without deleting the database.",
+  );*/
 }
 
 seed()
-  .catch((error) => {
-    console.error("Seed failed:", error);
+  .catch((error: unknown) => {
+    console.error("SafePlate seed failed:", error);
     process.exitCode = 1;
   })
   .finally(async () => {

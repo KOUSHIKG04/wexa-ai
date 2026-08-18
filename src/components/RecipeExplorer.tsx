@@ -10,48 +10,72 @@ export default function RecipeExplorer() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-
-  async function loadRecipes(allergens: string[]) {
-    setLoading(true);
-    setError("");
-
-    try {
-      const query = new URLSearchParams();
-
-      allergens.forEach((allergen) => {
-        query.append("allergen", allergen);
-      });
-
-      const response = await fetch(`/api/recipes?${query.toString()}`, {
-        cache: "no-store",
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message ?? "Unable to load recipes.");
-      }
-
-      setRecipes(data.recipes);
-    } catch (error) {
-      setError(
-        error instanceof Error ? error.message : "Unable to load recipes.",
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    void loadRecipes(selectedAllergens);
-  }, [selectedAllergens]);
+    let ignore = false;
+
+    async function fetchRecipes() {
+      try {
+        const query = new URLSearchParams();
+
+        selectedAllergens.forEach((allergen) => {
+          query.append("allergen", allergen);
+        });
+
+        const response = await fetch(`/api/recipes?${query.toString()}`, {
+          cache: "no-store",
+        });
+
+        const data = await response.json();
+
+        if (ignore) return;
+
+        if (!response.ok) {
+          throw new Error(data.message ?? "Unable to load recipes.");
+        }
+
+        setRecipes(data.recipes);
+        setError("");
+      } catch (err) {
+        if (ignore) return;
+        setError(
+          err instanceof Error ? err.message : "Unable to load recipes.",
+        );
+      } finally {
+        if (!ignore) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void fetchRecipes();
+
+    return () => {
+      ignore = true;
+    };
+  }, [selectedAllergens, reloadKey]);
 
   function toggleAllergen(allergen: string) {
+    setLoading(true);
+    setError("");
     setSelectedAllergens((current) =>
       current.includes(allergen)
         ? current.filter((item) => item !== allergen)
         : [...current, allergen],
     );
+  }
+
+  function clearAllergens() {
+    setLoading(true);
+    setError("");
+    setSelectedAllergens([]);
+  }
+
+  function handleRetry() {
+    setLoading(true);
+    setError("");
+    setReloadKey((k) => k + 1);
   }
 
   const filteredRecipes = useMemo(() => {
@@ -134,7 +158,7 @@ export default function RecipeExplorer() {
           {selectedAllergens.length > 0 && (
             <button
               type="button"
-              onClick={() => setSelectedAllergens([])}
+              onClick={clearAllergens}
               className="mt-5 text-sm font-semibold text-emerald-800 hover:underline"
             >
               Clear all filters
@@ -181,7 +205,7 @@ export default function RecipeExplorer() {
 
             <button
               type="button"
-              onClick={() => loadRecipes(selectedAllergens)}
+              onClick={handleRetry}
               className="mt-4 rounded-xl bg-red-700 px-4 py-2 font-semibold text-white"
             >
               Try again
